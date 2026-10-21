@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Strings</string>
+    <string name="app_description">An awesome Xposed module powered by modern libxposed API</string>
+</resources>

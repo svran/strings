@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Strings" parent="android:Theme.Material.Light.NoActionBar"/>
+    <style name="Theme.Strings" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- 强制状态栏为透明或白色背景，并开启深色文字模式 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

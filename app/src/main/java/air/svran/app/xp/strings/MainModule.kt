@@ -1,6 +1,7 @@
 package air.svran.app.xp.strings
 
 import android.content.res.Resources
+import android.content.res.TypedArray
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import io.github.libxposed.api.XposedInterface
@@ -76,11 +77,11 @@ class MainModule : XposedModule() {
     private fun hookResources(param: XposedModuleInterface.PackageLoadedParam, replacements: Map<String, String>) {
         val idToReplacement = mutableMapOf<Int, String>()
         var isCacheInitialized = false
+        val cacheLock = Any()
 
-        val hooker = object : XposedInterface.Hooker {
-            override fun intercept(chain: XposedInterface.Chain): Any? {
-                val res = chain.thisObject as? Resources
-                if (res != null) {
+        fun ensureCache(res: Resources) {
+            if (!isCacheInitialized) {
+                synchronized(cacheLock) {
                     if (!isCacheInitialized) {
                         replacements.forEach { (name, value) ->
                             val id = res.getIdentifier(name, "string", param.packageName)
@@ -90,7 +91,15 @@ class MainModule : XposedModule() {
                         }
                         isCacheInitialized = true
                     }
+                }
+            }
+        }
 
+        val resHooker = object : XposedInterface.Hooker {
+            override fun intercept(chain: XposedInterface.Chain): Any? {
+                val res = chain.thisObject as? Resources
+                if (res != null) {
+                    ensureCache(res)
                     val args = chain.args
                     if (args.isNotEmpty()) {
                         val id = args[0] as? Int
@@ -103,14 +112,44 @@ class MainModule : XposedModule() {
             }
         }
 
+        val typedArrayHooker = object : XposedInterface.Hooker {
+            override fun intercept(chain: XposedInterface.Chain): Any? {
+                val typedArray = chain.thisObject as? TypedArray
+                if (typedArray != null) {
+                    ensureCache(typedArray.resources)
+                    val args = chain.args
+                    if (args.isNotEmpty()) {
+                        val index = args[0] as? Int
+                        if (index != null) {
+                            val id = typedArray.getResourceId(index, 0)
+                            if (id != 0 && idToReplacement.containsKey(id)) {
+                                return idToReplacement[id]
+                            }
+                        }
+                    }
+                }
+                return chain.proceed()
+            }
+        }
+
         try {
             val getTextMethod1 = Resources::class.java.getDeclaredMethod("getText", Int::class.java)
-            hook(getTextMethod1).intercept(hooker)
+            hook(getTextMethod1).intercept(resHooker)
             
             val getTextMethod2 = Resources::class.java.getDeclaredMethod("getText", Int::class.java, CharSequence::class.java)
-            hook(getTextMethod2).intercept(hooker)
+            hook(getTextMethod2).intercept(resHooker)
+            
+            val getStringMethod = Resources::class.java.getDeclaredMethod("getString", Int::class.java)
+            hook(getStringMethod).intercept(resHooker)
+
+            val taGetText = TypedArray::class.java.getDeclaredMethod("getText", Int::class.java)
+            hook(taGetText).intercept(typedArrayHooker)
+
+            val taGetString = TypedArray::class.java.getDeclaredMethod("getString", Int::class.java)
+            hook(taGetString).intercept(typedArrayHooker)
+
         } catch (e: Exception) {
-            Log.e("StringsModule", "Failed to hook Resources", e)
+            Log.e("StringsModule", "Failed to hook Resources/TypedArray", e)
         }
     }
 }

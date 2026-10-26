@@ -1,0 +1,4 @@
+-keep class air.svran.app.xp.strings.MainModule { *; }
+-keep class io.github.libxposed.** { *; }
+-keep class kotlin.collections.** { *; }
+-keep class androidx.startup.** { *; }

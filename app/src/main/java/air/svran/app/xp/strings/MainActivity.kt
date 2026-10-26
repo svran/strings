@@ -8,17 +8,22 @@ import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,8 +31,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
@@ -35,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private var xposedService: XposedService? by mutableStateOf(null)
     private var scopeList by mutableStateOf<List<String>>(emptyList())
     private var appsList by mutableStateOf<List<ApplicationInfo>>(emptyList())
+    private var isAppsLoaded by mutableStateOf(false)
 
     private var currentPkgForFile: String? = null
     
@@ -45,7 +55,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        loadApps()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
 
         XposedServiceHelper.registerListener(object : XposedServiceHelper.OnServiceListener {
             override fun onServiceBind(service: XposedService) {
@@ -68,9 +83,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadApps() {
-        appsList = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
-            .filter { it.packageName != packageName }
-            .sortedBy { it.loadLabel(packageManager).toString() }
+        if (isAppsLoaded) return
+        lifecycleScope.launch(Dispatchers.IO) {
+            val list = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+                .filter { it.packageName != packageName }
+                .sortedBy { it.loadLabel(packageManager).toString() }
+            withContext(Dispatchers.Main) {
+                appsList = list
+                isAppsLoaded = true
+            }
+        }
     }
 
     private fun refreshScope(service: XposedService) {
@@ -184,24 +206,34 @@ class MainActivity : ComponentActivity() {
     fun AppListScreen(onBack: () -> Unit) {
         val service = xposedService ?: return
         
+        LaunchedEffect(Unit) {
+            loadApps()
+        }
+        
         BackHandler {
             onBack()
         }
 
         val prefs = remember { getPreferences(Context.MODE_PRIVATE) }
         var showMenu by remember { mutableStateOf(false) }
+        var isSearching by remember { mutableStateOf(false) }
+        var searchQuery by remember { mutableStateOf("") }
         var hideSystemApps by remember { mutableStateOf(prefs.getBoolean("hideSystemApps", false)) }
         var sortEnabledFirst by remember { mutableStateOf(prefs.getBoolean("sortEnabledFirst", false)) }
 
-        // 动态过滤和排序列表
-        val displayedApps = remember(appsList, scopeList, hideSystemApps, sortEnabledFirst) {
+        val displayedApps = remember(appsList, scopeList, hideSystemApps, sortEnabledFirst, searchQuery) {
             var list = appsList
             if (hideSystemApps) {
-                // 过滤掉 FLAG_SYSTEM 的应用
                 list = list.filter { (it.flags and ApplicationInfo.FLAG_SYSTEM) == 0 }
             }
+            if (searchQuery.isNotEmpty()) {
+                val query = searchQuery.lowercase()
+                list = list.filter { 
+                    it.packageName.lowercase().contains(query) || 
+                    it.loadLabel(packageManager).toString().lowercase().contains(query) 
+                }
+            }
             if (sortEnabledFirst) {
-                // 使用稳定排序，按是否包含在作用域里降序排列，保持原有的字母顺序
                 list = list.sortedByDescending { scopeList.contains(it.packageName) }
             }
             list
@@ -209,81 +241,130 @@ class MainActivity : ComponentActivity() {
 
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = { Text("选择目标应用") },
-                    actions = {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("隐藏系统应用") },
-                                trailingIcon = {
-                                    if (hideSystemApps) {
-                                        Icon(Icons.Default.Check, contentDescription = "Checked")
-                                    }
-                                },
-                                onClick = {
-                                    val newValue = !hideSystemApps
-                                    hideSystemApps = newValue
-                                    prefs.edit().putBoolean("hideSystemApps", newValue).apply()
-                                    showMenu = false
-                                }
+                if (isSearching) {
+                    TopAppBar(
+                        title = {
+                            TextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                placeholder = { Text("搜索应用名或包名") },
+                                singleLine = true,
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent
+                                ),
+                                modifier = Modifier.fillMaxWidth()
                             )
-                            DropdownMenuItem(
-                                text = { Text("已启用置顶") },
-                                trailingIcon = {
-                                    if (sortEnabledFirst) {
-                                        Icon(Icons.Default.Check, contentDescription = "Checked")
-                                    }
-                                },
-                                onClick = {
-                                    val newValue = !sortEnabledFirst
-                                    sortEnabledFirst = newValue
-                                    prefs.edit().putBoolean("sortEnabledFirst", newValue).apply()
-                                    showMenu = false
-                                }
-                            )
-                        }
-                    }
-                )
-            }
-        ) { padding ->
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            ) {
-                items(displayedApps, key = { it.packageName }) { app ->
-                    val isEnabled = scopeList.contains(app.packageName)
-                    AppItem(
-                        appInfo = app,
-                        isEnabled = isEnabled,
-                        onCheckedChange = { checked ->
-                            if (checked) {
-                                service.requestScope(listOf(app.packageName), object : XposedService.OnScopeEventListener {
-                                    override fun onScopeRequestApproved(approved: List<String>) {
-                                        runOnUiThread { refreshScope(service) }
-                                    }
-                                    override fun onScopeRequestFailed(message: String) {
-                                        runOnUiThread {
-                                            Toast.makeText(this@MainActivity, "授权失败: $message", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                })
-                            } else {
-                                service.removeScope(listOf(app.packageName))
-                                refreshScope(service)
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = { 
+                                isSearching = false
+                                searchQuery = ""
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
                         },
-                        onConfigureClick = {
-                            currentPkgForFile = app.packageName
-                            filePickerLauncher.launch("text/xml")
+                        actions = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Default.Clear, contentDescription = "Clear")
+                                }
+                            }
                         }
                     )
+                } else {
+                    TopAppBar(
+                        title = { Text("选择目标应用") },
+                        navigationIcon = {
+                            IconButton(onClick = onBack) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                            }
+                        },
+                        actions = {
+                            IconButton(onClick = { isSearching = true }) {
+                                Icon(Icons.Default.Search, contentDescription = "Search")
+                            }
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("隐藏系统应用") },
+                                    trailingIcon = {
+                                        if (hideSystemApps) {
+                                            Icon(Icons.Default.Check, contentDescription = "Checked")
+                                        }
+                                    },
+                                    onClick = {
+                                        val newValue = !hideSystemApps
+                                        hideSystemApps = newValue
+                                        prefs.edit().putBoolean("hideSystemApps", newValue).apply()
+                                        showMenu = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("已启用置顶") },
+                                    trailingIcon = {
+                                        if (sortEnabledFirst) {
+                                            Icon(Icons.Default.Check, contentDescription = "Checked")
+                                        }
+                                    },
+                                    onClick = {
+                                        val newValue = !sortEnabledFirst
+                                        sortEnabledFirst = newValue
+                                        prefs.edit().putBoolean("sortEnabledFirst", newValue).apply()
+                                        showMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+        ) { padding ->
+            if (!isAppsLoaded) {
+                Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                ) {
+                    items(displayedApps, key = { it.packageName }) { app ->
+                        val isEnabled = scopeList.contains(app.packageName)
+                        AppItem(
+                            appInfo = app,
+                            isEnabled = isEnabled,
+                            onCheckedChange = { checked ->
+                                if (checked) {
+                                    service.requestScope(listOf(app.packageName), object : XposedService.OnScopeEventListener {
+                                        override fun onScopeRequestApproved(approved: List<String>) {
+                                            runOnUiThread { refreshScope(service) }
+                                        }
+                                        override fun onScopeRequestFailed(message: String) {
+                                            runOnUiThread {
+                                                Toast.makeText(this@MainActivity, "授权失败: $message", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    })
+                                } else {
+                                    service.removeScope(listOf(app.packageName))
+                                    refreshScope(service)
+                                }
+                            },
+                            onConfigureClick = {
+                                currentPkgForFile = app.packageName
+                                filePickerLauncher.launch("text/xml")
+                            }
+                        )
+                    }
                 }
             }
         }
